@@ -1,17 +1,43 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+import docx2txt
+import PyPDF2
 
 app = FastAPI()
 
-# CORS so frontend can call backend
+# Allow frontend to call backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In prod, replace * with your domain
+    allow_origins=["*"],  # In production, replace * with your domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- File Upload Endpoint ---
+@app.post("/api/upload")
+async def upload_resume(file: UploadFile = File(...)):
+    content = ""
+
+    if file.filename.endswith(".pdf"):
+        reader = PyPDF2.PdfReader(file.file)
+        for page in reader.pages:
+            if page.extract_text():
+                content += page.extract_text() + "\n"
+
+    elif file.filename.endswith(".docx"):
+        content = docx2txt.process(file.file)
+
+    elif file.filename.endswith(".txt"):
+        content = (await file.read()).decode("utf-8")
+
+    else:
+        return {"error": "Unsupported file type"}
+
+    return {"text": content.strip()}
+
+
+# --- Resume Scoring Endpoint ---
 @app.post("/api/score")
 async def score_resume(request: Request):
     data = await request.json()
