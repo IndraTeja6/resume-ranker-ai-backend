@@ -8,7 +8,7 @@ const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'AIzaSyDIW0j1ZGnkGD0zNfOtaGGoJP7Br9gWGmg');
@@ -143,5 +143,5 @@ app.post('/analyze-resume', upload.single('resume'), async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
