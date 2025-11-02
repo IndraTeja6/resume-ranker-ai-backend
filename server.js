@@ -1,147 +1,143 @@
-const express = require('express');
-const multer = require('multer');
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const pdf = require('pdf-parse');
-const mammoth = require('mammoth');
+// server.js
+const express = require("express");
+const multer = require("multer");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+const pdf = require("pdf-parse");
+const mammoth = require("mammoth");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'AIzaSyDIW0j1ZGnkGD0zNfOtaGGoJP7Br9gWGmg');
+// ✅ Initialize Gemini API securely
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+if (!process.env.GEMINI_API_KEY) {
+  console.warn("⚠️ Warning: GEMINI_API_KEY not found in environment variables");
+}
 
+// ✅ Middleware setup
 app.use(cors());
 app.use(express.json());
-app.use(express.static('.'));
+app.use(express.urlencoded({ extended: true }));
 
-// Configure multer for file uploads
+// ✅ Serve static files (optional for testing locally)
+app.use(express.static(path.join(__dirname, "public")));
+
+// ✅ Configure file uploads folder
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = './uploads';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => {
+    const unique = Date.now() + "-" + file.originalname.replace(/\s+/g, "_");
+    cb(null, unique);
   },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
 });
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['.pdf', '.doc', '.docx'];
+const upload = multer({
+  storage,
+  fileFilter: (_, file, cb) => {
+    const allowed = [".pdf", ".doc", ".docx"];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowedTypes.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type'));
-    }
-  }
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error("❌ Only PDF, DOC, or DOCX files are allowed"));
+  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
 });
 
-// Extract text from uploaded file
-async function extractText(filePath, fileType) {
-  try {
-    if (fileType === '.pdf') {
-      const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdf(dataBuffer);
-      return data.text;
-    } else if (fileType === '.doc' || fileType === '.docx') {
-      const result = await mammoth.extractRawText({ path: filePath });
-      return result.value;
-    }
-  } catch (error) {
-    throw new Error('Failed to extract text from file');
+// ✅ Extract text from resume
+async function extractText(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".pdf") {
+    const data = await pdf(fs.readFileSync(filePath));
+    return data.text;
+  } else {
+    const result = await mammoth.extractRawText({ path: filePath });
+    return result.value;
   }
 }
 
-// Score resume using Gemini API
-async function scoreResume(resumeText, jobDescription = '') {
+// ✅ Analyze resume using Gemini
+async function analyzeResume(text, jobDescription) {
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
     const prompt = `
-    Analyze this resume and provide a comprehensive score out of 100. Consider:
-    - ATS compatibility and keyword optimization
-    - Professional formatting and structure
-    - Relevant skills and experience
-    - Education and certifications
-    - Overall presentation quality
-    ${jobDescription ? `- Match with job description: ${jobDescription}` : ''}
-    
-    Resume content:
-    ${resumeText}
-    
-    Provide response in JSON format:
-    {
-      "overallScore": number,
-      "atsScore": number,
-      "skillsScore": number,
-      "experienceScore": number,
-      "formatScore": number,
-      "suggestions": ["suggestion1", "suggestion2", "suggestion3"],
-      "strengths": ["strength1", "strength2"],
-      "improvements": ["improvement1", "improvement2"]
-    }
-    `;
+Analyze this resume and return a JSON response evaluating:
+- ATS compatibility
+- Skill relevance
+- Experience level
+- Formatting
+- Match with job description (if provided)
+
+Resume:
+${text}
+
+Job Description:
+${jobDescription || "N/A"}
+
+Return ONLY JSON with this format:
+{
+  "overallScore": number,
+  "atsScore": number,
+  "skillsScore": number,
+  "experienceScore": number,
+  "formatScore": number,
+  "strengths": ["string"],
+  "improvements": ["string"],
+  "suggestions": ["string"]
+}`;
 
     const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    
-    // Parse JSON response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    } else {
-      throw new Error('Invalid response format');
-    }
-  } catch (error) {
-    console.error('Gemini API error:', error);
-    throw new Error('Failed to score resume');
+    const output = result.response.text();
+
+    const json = output.match(/\{[\s\S]*\}/);
+    if (!json) throw new Error("Invalid response from Gemini");
+    return JSON.parse(json[0]);
+  } catch (err) {
+    console.error("Gemini error:", err.message);
+    throw new Error("Failed to analyze resume");
   }
 }
 
-// Upload and analyze resume endpoint
-app.post('/analyze-resume', upload.single('resume'), async (req, res) => {
+// ✅ POST endpoint for resume analysis
+app.post("/analyze-resume", upload.single("resume"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const filePath = req.file.path;
-    const fileType = path.extname(req.file.originalname).toLowerCase();
-    const jobDescription = req.body.jobDescription || '';
+    const jobDescription = req.body.jobDescription || "";
 
-    // Extract text from file
-    const resumeText = await extractText(filePath, fileType);
-    
-    // Score resume using Gemini
-    const score = await scoreResume(resumeText, jobDescription);
+    const text = await extractText(filePath);
+    const analysis = await analyzeResume(text, jobDescription);
 
-    // Clean up uploaded file
-    fs.unlinkSync(filePath);
+    // ✅ Clean up file
+    fs.unlink(filePath, () => {});
 
     res.json({
       success: true,
-      filename: req.file.originalname,
-      score: score
+      message: "Resume analyzed successfully",
+      data: analysis,
     });
-
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ 
-      error: 'Failed to analyze resume',
-      message: error.message 
-    });
+    console.error("Error in /analyze-resume:", error);
+    res.status(500).json({ error: error.message || "Server error" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// ✅ Health check endpoint
+app.get("/", (req, res) => {
+  res.send("✅ Resume Analyzer Backend is running successfully.");
 });
+
+// ✅ Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
+
